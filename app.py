@@ -15,7 +15,6 @@ import streamlit as st
 import plotly.express as px
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import statsmodels.api as sm
 from statsmodels.formula.api import ols
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
@@ -28,6 +27,9 @@ HOJA_EXIST = "Existencias_totales"
 HOJA_SALIDAS = "Histórico_de_Entradas_Salidas"
 HOJA_VENTAS = "Histórico_Ventas"
 LOGO = "clv_logo.jpg"
+#Opcional: grupo de k-means de cada artículo (exportado del notebook de clustering)
+ARCHIVO_CLUSTERS = "clusters_productos.csv"
+COL_GRUPO = "grupo"
 FECHA_CORTE = "15/10/2026"
 #####################################################
 
@@ -75,6 +77,12 @@ CSS = """
           border-bottom: 2px solid rgba(31,111,178,0.35);}
 .etiqueta {font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
            opacity: 0.6; margin: 16px 0 2px 0; font-weight: 700;}
+.lectura {background: rgba(31,111,178,0.08); border: 1px solid rgba(31,111,178,0.25);
+          border-radius: 10px; padding: 14px 18px; margin: 18px 0 8px 0; line-height: 1.55;}
+.lectura .titulo {font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em;
+                  font-weight: 700; color: COLOR_P; margin-bottom: 6px;}
+.conclusion {border-left: 4px solid COLOR_P; padding: 6px 0 6px 14px; margin: 10px 0;}
+.conclusion b {display: block; margin-bottom: 2px;}
 </style>
 """.replace("COLOR_P", COLOR).replace("COLOR_O", COLOR_OSCURO)
 st.markdown(CSS, unsafe_allow_html=True)
@@ -110,6 +118,11 @@ def fila_tarjetas(lista):
 #Título de sección dentro de una vista
 def seccion(texto):
     st.markdown(f"<div class='seccion'>{texto}</div>", unsafe_allow_html=True)
+
+#Caja de lectura del equipo (texto fijo, no editable)
+def lectura(texto, titulo="Lectura del equipo"):
+    st.markdown(f"<div class='lectura'><div class='titulo'>{titulo}</div>{texto}</div>",
+                unsafe_allow_html=True)
 
 #Etiqueta de grupo en la sidebar
 def etiqueta_sidebar(texto):
@@ -156,12 +169,56 @@ def unificar_marca(serie):
 def formato_p(p):
     return "< 0.001" if p < 0.001 else f"{p:.4f}"
 
+#Versión para textos HTML (el símbolo "<" se escribe como &lt;)
+def formato_p_html(p):
+    return formato_p(p).replace("<", "&lt;")
+
 #Formato de dinero
 def dinero(x):
     return f"${x:,.0f}"
 
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
          "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+######################################################
+#RESULTADOS DEL CLUSTERING DE PRODUCTOS (actividad de clustering, histórico de compras)
+#473 artículos con 5 o más compras (2021-2026), k-means con k = 7
+#Valores = mediana de cada grupo; % del gasto sobre el total de los 473 artículos
+######################################################
+PERFILES = pd.DataFrame({
+    "grupo": [6, 4, 3, 5, 0, 1, 2],
+    "nombre": ["Equipos de alto valor", "Alto valor de compra reciente", "Compras grandes sin reposición",
+               "Consumibles estrella", "Consumibles de alto volumen", "Precio medio, compra regular",
+               "Cola larga de bajo valor"],
+    "articulos": [32, 19, 28, 26, 152, 70, 146],
+    "compras": [7, 5, 5, 12, 7, 9, 6],
+    "unidades_compra": [5.2, 4.4, 31.4, 151.2, 105.6, 15.7, 9.1],
+    "precio_unitario": [36736.3, 20251.8, 2549.7, 578.2, 80.7, 780.2, 178.9],
+    "recencia_dias": [223.5, 0, 653.5, 15, 142, 34, 142],
+    "antiguedad_dias": [1391.5, 714, 488.5, 1856, 1807, 1777.5, 1681],
+    "pct_gasto": [49.9, 13.4, 15.5, 9.3, 5.9, 5.1, 0.9],
+    "estrategia": ["Comprar bajo pedido o con control estricto: concentran la mitad del gasto",
+                   "Vigilar cobertura: son caros y se están comprando ahora",
+                   "Revisar si se descontinuaron: riesgo de inventario detenido",
+                   "Asegurar abasto con reorden automático: son los de mayor rotación",
+                   "Consolidar compras por volumen para negociar precio",
+                   "Reposición regular según cobertura",
+                   "Evaluar si conviene mantenerlos en catálogo"],
+})
+PERFILES["pct_articulos"] = PERFILES["articulos"] / PERFILES["articulos"].sum() * 100
+PERFILES["etiqueta"] = "G" + PERFILES["grupo"].astype(str) + " · " + PERFILES["nombre"]
+
+#Comparación de métodos (silhouette y tamaño del grupo mayor)
+METODOS = pd.DataFrame({
+    "Método": ["k-means (k = 7)", "Jerárquico · single", "Jerárquico · complete", "Jerárquico · average", "Jerárquico · ward"],
+    "Silhouette": [0.349, 0.394, 0.302, 0.317, 0.241],
+    "Grupo mayor (% de artículos)": [32.1, 96.0, 43.3, 79.5, 30.2],
+    "Lectura": ["Buena separación y grupos con perfiles distintos (elegido)",
+                "Separación alta, pero junta casi todo en un grupo",
+                "Grupos desbalanceados",
+                "Junta 8 de cada 10 artículos en un grupo",
+                "Grupos balanceados, pero con la menor separación"],
+})
 
 ######################################################
 #Definimos la instancia (cache_data porque guardamos DataFrames)
@@ -296,6 +353,7 @@ View = st.sidebar.radio(label="Vista", label_visibility="collapsed",
                                  "Salidas de almacén",
                                  "Existencias al corte",
                                  "Rotación y cobertura",
+                                 "Segmentación de productos",
                                  "ANOVA",
                                  "Conclusiones"])
 st.sidebar.markdown("---")
@@ -326,6 +384,40 @@ ytd_actual = df_salidas[(df_salidas["anio"] == anio_actual) & (df_salidas["mes"]
 ytd_previo = df_salidas[(df_salidas["anio"] == anio_actual - 1) & (df_salidas["mes"] <= ultimo_mes)]["salidas"].sum()
 var_ytd = (ytd_actual / ytd_previo - 1) * 100 if ytd_previo > 0 else np.nan
 
+#Salidas totales por año y crecimiento entre años completos (2022 -> 2025)
+anual_total = df_salidas.groupby("anio")["salidas"].sum()
+crecimiento = ((anual_total[2025] / anual_total[2022] - 1) * 100
+               if 2022 in anual_total.index and 2025 in anual_total.index else np.nan)
+
+#Mes atípico: el mes con más salidas de toda la serie (2021 en adelante) comparado con la mediana
+totales_mes = df_salidas[df_salidas["anio"] >= 2021].groupby("periodo")["salidas"].sum()
+pico_periodo = totales_mes.idxmax()
+pico_valor = totales_mes.max()
+pico_veces = pico_valor / totales_mes.median()
+pico_txt = f"{MESES[pico_periodo.month - 1]} de {pico_periodo.year}"
+#Solo se considera atípico si es al menos 3 veces un mes normal
+hay_pico = pico_veces >= 3
+
+#ANOVA de referencia: salidas totales por mes, 2022 en adelante (el que se presenta)
+ref_mes = df_salidas[df_salidas["anio"] >= 2022].groupby(["anio", "mes"])["salidas"].sum().reset_index()
+p_estacional = stats.f_oneway(*[g["salidas"] for _, g in ref_mes.groupby("mes")]).pvalue
+estacional_sig = p_estacional < 0.05
+#Textos que cambian según los datos (para que siempre digan la verdad)
+tendencia_txt = f"{'crecer' if crecimiento >= 0 else 'caer'} {abs(crecimiento):.0f}%"
+estable = abs(var_ytd) < 5
+
+#Pareto de ventas: cuántos artículos generan el 80% del monto
+venta_art = ventas_cc.groupby("nombre_articulo")["total_neto"].sum().sort_values(ascending=False)
+n_80_total = int((venta_art.cumsum() / venta_art.sum() <= 0.80).sum()) + 1
+
+#Totales del cruce por estado (se usan en Resumen, Rotación y Conclusiones)
+valor_total = cruce["valor_inventario"].sum()
+sin_mov = cruce[cruce["estado_inventario"] == "Sin movimiento 12m"]
+baja = cruce[cruce["estado_inventario"] == "Cobertura baja"]
+sobre = cruce[cruce["estado_inventario"] == "Sobreinventario"]
+baja_a = int((baja["clase_abc"] == "A").sum())
+pct_sin_exist = sin_exist["monto_vendido"].sum() / ventas_cc["total_neto"].sum() * 100
+
 ##############################################################################
 # CONTENIDO DE LA VISTA 1
 if View == "Resumen ejecutivo":
@@ -333,8 +425,6 @@ if View == "Resumen ejecutivo":
                "Ventas 05/01–15/10/2026 · Salidas 2021–2026 · Existencias al 15/10/2026")
 
     #Fila 1: ventas y salidas
-    sin_mov = cruce[cruce["estado_inventario"] == "Sin movimiento 12m"]
-    baja = cruce[cruce["estado_inventario"] == "Cobertura baja"]
     fila_tarjetas([
         ("Ventas 2026", dinero(ventas_cc["total_neto"].sum()), "partidas con costo"),
         ("Clientes atendidos", f"{df_ventas['cliente'].nunique():,}", f"{df_ventas['folio'].nunique():,} folios"),
@@ -366,7 +456,9 @@ if View == "Resumen ejecutivo":
         fig = px.bar(anual, x="anio", y="salidas", text="meses", color_discrete_sequence=[COLOR])
         fig.update_traces(texttemplate="%{text} meses", textposition="outside")
         mostrar(fig)
-        st.caption("2020 no tiene registros. 2021 y 2026 tienen 10 meses; 2019 (1 mes) se omite.")
+        st.caption("2020 no tiene registros y 2019 (1 mes) se omite. 2021 y 2026 tienen 10 meses."
+                   + (f" La barra de {pico_periodo.year} incluye {pico_txt}, un mes atípico de {pico_valor:,.0f} salidas."
+                      if hay_pico else ""))
     with Contenedor_B:
         seccion("Valor del inventario por estado")
         resumen_estado = cruce.groupby("estado_inventario")["valor_inventario"].sum().reset_index()
@@ -374,9 +466,11 @@ if View == "Resumen ejecutivo":
                      color="estado_inventario", color_discrete_map=COLORES_ESTADO)
         mostrar(fig)
 
-    seccion("Comentarios del equipo")
-    st.text_area("Interpretación", placeholder="Escribe aquí los hallazgos principales para el socio...",
-                 key="com_resumen", label_visibility="collapsed")
+    lectura(f"{'La operación se estabilizó: l' if estable else 'L'}as salidas de {anio_actual} van {var_ytd:+.1f}% "
+            f"contra el mismo periodo de {anio_actual - 1}, después de {tendencia_txt} entre 2022 y 2025. "
+            f"El inventario vale {dinero(valor_total)}: el {sobre['valor_inventario'].sum() / valor_total * 100:.0f}% "
+            f"de ese valor está en sobreinventario y el {sin_mov['valor_inventario'].sum() / valor_total * 100:.0f}% "
+            f"en artículos sin movimiento. El riesgo más urgente son los <b>{baja_a} artículos clase A con cobertura baja</b>.")
 
 ##############################################################################
 # CONTENIDO DE LA VISTA 2
@@ -428,8 +522,12 @@ if View == "Histórico de ventas":
     mostrar(fig)
     st.info(f"{n_80:,} de {len(pareto):,} artículos ({n_80 / len(pareto) * 100:.1f}%) generan el 80% del monto vendido.")
 
-    seccion("Comentarios del equipo")
-    st.text_area("Interpretación", key="com_ventas", label_visibility="collapsed")
+    marca_top = df_v.groupby("marca")["total_neto"].sum().sort_values(ascending=False)
+    mes_top = mensual.loc[mensual["total_neto"].idxmax(), "mes"] if len(mensual) else 1
+    lectura(f"La venta está concentrada: <b>{n_80:,} artículos ({n_80 / len(pareto) * 100:.0f}%) generan el 80% del monto</b>, "
+            f"así que el abasto de esos artículos es el que más protege el ingreso. "
+            f"{marca_top.index[0].title()} es la marca con más venta ({marca_top.iloc[0] / marca_top.sum() * 100:.0f}% del monto) "
+            f"y {MESES[int(mes_top) - 1]} fue el mes más alto del año.")
 
 ##############################################################################
 # CONTENIDO DE LA VISTA 3
@@ -446,12 +544,16 @@ if View == "Salidas de almacén":
         df_s = df_s[df_s["marca"].isin(marcas_sel)]
 
     mensual = df_s.groupby(["anio", "mes"])["salidas"].sum().reset_index()
-    estacional = mensual.groupby("mes")["salidas"].mean().reset_index()
-    mes_pico = int(estacional.loc[estacional["salidas"].idxmax(), "mes"]) if len(estacional) else 1
+    #La estacionalidad se calcula sin 2021 (igual que el ANOVA) para que el mes atípico no la distorsione
+    mensual_sin_2021 = mensual[mensual["anio"] >= 2022]
+    estacional = mensual_sin_2021.groupby("mes")["salidas"].mean().reset_index()
     fila_tarjetas([
         ("Salidas en el periodo", f"{df_s['salidas'].sum():,.0f}", f"{len(anios_sel)} años seleccionados"),
-        ("Promedio mensual", f"{mensual['salidas'].mean():,.0f}" if len(mensual) else "-", "unidades por mes"),
-        ("Mes más alto (promedio)", MESES[mes_pico - 1].capitalize(), "estacionalidad"),
+        ("Mes típico", f"{mensual_sin_2021['salidas'].median():,.0f}" if len(mensual_sin_2021) else "-",
+         "salidas por mes (mediana 2022–2026)"),
+        ("Mes atípico", pico_txt.capitalize() if hay_pico else "Ninguno",
+         f"{pico_valor:,.0f} salidas ({pico_veces:.0f} veces lo normal)" if hay_pico else "sin picos fuera de lo normal",
+         "aviso" if hay_pico else "base"),
         (f"Ene–{mes_txt[:3]} {anio_actual} vs {anio_actual - 1}",
          f"{var_ytd:+.1f}%" if not np.isnan(var_ytd) else "-", "todas las marcas",
          "ok" if var_ytd >= 0 else "alerta"),
@@ -461,6 +563,11 @@ if View == "Salidas de almacén":
     seccion("Salidas mensuales")
     serie = df_s.groupby("periodo")["salidas"].sum().reset_index()
     fig = px.line(serie, x="periodo", y="salidas", markers=True, color_discrete_sequence=[COLOR])
+    #Señalamos el mes atípico si está dentro de lo que se muestra
+    if hay_pico and pico_periodo in set(serie["periodo"]):
+        valor_visible = serie.loc[serie["periodo"] == pico_periodo, "salidas"].iloc[0]
+        fig.add_annotation(x=pico_periodo, y=valor_visible, text=f"Mes atípico: {pico_txt}",
+                           showarrow=True, arrowhead=2, ax=90, ay=10)
     mostrar(fig)
     st.caption("El hueco de 2020 corresponde a meses sin registros (no se imputaron).")
 
@@ -471,6 +578,7 @@ if View == "Salidas de almacén":
         fig = px.bar(estacional, x="mes", y="salidas", color_discrete_sequence=[COLOR])
         fig.update_xaxes(dtick=1)
         mostrar(fig)
+        st.caption("Calculado con 2022 en adelante, igual que el ANOVA, para que el mes atípico no lo distorsione.")
     with Contenedor_B:
         seccion("Marcas con más salidas")
         top_n = st.slider("Número de marcas", 5, 20, 10)
@@ -479,8 +587,19 @@ if View == "Salidas de almacén":
         fig.update_yaxes(autorange="reversed")
         mostrar(fig)
 
-    seccion("Comentarios del equipo")
-    st.text_area("Interpretación", key="com_salidas", label_visibility="collapsed")
+    marca_sal = df_s.groupby("marca")["salidas"].sum().sort_values(ascending=False)
+    texto_marca = (f" {marca_sal.index[0].title()} es la marca que más se mueve "
+                   f"({marca_sal.iloc[0] / marca_sal.sum() * 100:.0f}% de las salidas)." if len(marca_sal) else "")
+    if estacional_sig:
+        texto_est = (f"Hay meses con más demanda que otros: el ANOVA con 2022–2026 encuentra diferencias significativas "
+                     f"entre meses (p {formato_p_html(p_estacional)}).")
+    else:
+        texto_est = (f"La demanda del almacén es estable a lo largo del año: el ANOVA con 2022–2026 no encuentra diferencias "
+                     f"significativas entre meses (p = {p_estacional:.2f}).")
+    texto_pico = (f" El pico de <b>{pico_txt}</b> ({pico_valor:,.0f} salidas, unas {pico_veces:.0f} veces un mes normal) "
+                  f"es atípico, probablemente una carga inicial o un ajuste de inventario; por eso se excluye del análisis "
+                  f"estadístico y conviene validarlo con CLV." if hay_pico else "")
+    lectura(texto_est + texto_pico + texto_marca)
 
 ##############################################################################
 # CONTENIDO DE LA VISTA 4
@@ -514,8 +633,12 @@ if View == "Existencias al corte":
         st.dataframe(orden.head(10)[["nombre_articulo", "marca", "unidades_existencia", "valor_inventario"]],
                      hide_index=True)
 
-    seccion("Comentarios del equipo")
-    st.text_area("Interpretación", key="com_exist", label_visibility="collapsed")
+    if len(por_marca):
+        lectura(f"El valor del inventario está concentrado: los 10 artículos más caros suman el <b>{top10:.0f}%</b> "
+                f"del valor y {por_marca.iloc[0]['marca'].title()} concentra el "
+                f"{por_marca.iloc[0]['valor_inventario'] / por_marca['valor_inventario'].sum() * 100:.0f}%. "
+                f"Hay {(df_e['valor_inventario'] == 0).sum():,} artículos con valor 0 que conviene revisar en el sistema "
+                f"de CLV, porque tienen unidades pero no costo registrado.")
 
 ##############################################################################
 # CONTENIDO DE LA VISTA 5
@@ -561,8 +684,109 @@ if View == "Rotación y cobertura":
     with st.expander(f"Artículos vendidos en 2026 sin existencia al corte ({len(sin_exist):,})"):
         st.dataframe(sin_exist[["nombre_articulo", "marca", "unidades_vendidas", "monto_vendido"]].round(0))
 
-    seccion("Comentarios del equipo")
-    st.text_area("Interpretación", key="com_rotacion", label_visibility="collapsed")
+    lectura(f"<b>Prioridad de compra:</b> {len(baja):,} artículos se pueden agotar en menos de {cobertura_baja:g} mes(es), "
+            f"y {baja_a} son clase A (de los que generan el 80% de la venta). "
+            f"<b>Dinero detenido:</b> {dinero(sobre['valor_inventario'].sum())} en sobreinventario y "
+            f"{dinero(sin_mov['valor_inventario'].sum())} en artículos sin salidas en un año, que pueden liberarse "
+            f"con promociones, liquidación o ajustando compras. <b>Por validar:</b> {len(sin_exist):,} artículos vendidos "
+            f"en 2026 no aparecen en el inventario al corte; muchos pueden ser equipos bajo pedido, no faltantes.")
+
+##############################################################################
+# CONTENIDO DE LA VISTA: SEGMENTACIÓN DE PRODUCTOS (CLUSTERING)
+if View == "Segmentación de productos":
+    encabezado("Segmentación de productos",
+               "Clustering del histórico de compras 2021–2026 · 473 artículos con 5 o más compras · k-means, 7 grupos")
+
+    alto = PERFILES[PERFILES["grupo"].isin([6, 4, 3])]
+    bajo = PERFILES[PERFILES["grupo"].isin([0, 2])]
+    g6 = PERFILES[PERFILES["grupo"] == 6].iloc[0]
+    fila_tarjetas([
+        ("Artículos segmentados", "473", "7 grupos con k-means"),
+        ("Calidad de los grupos", "0.349", "silhouette: mejor que el jerárquico balanceado"),
+        ("Equipos de alto valor", f"{g6['pct_gasto']:.0f}%",
+         f"del gasto en solo {g6['articulos']} artículos ({g6['pct_articulos']:.0f}%)", "aviso"),
+        ("3 grupos de alto valor", f"{alto['pct_gasto'].sum():.0f}%",
+         f"del gasto en {alto['articulos'].sum()} artículos ({alto['pct_articulos'].sum():.0f}%)", "aviso"),
+    ])
+
+    Contenedor_A, Contenedor_B = st.columns(2)
+    with Contenedor_A:
+        seccion("¿Dónde se va el dinero de las compras?")
+        concentracion = PERFILES.melt(id_vars="etiqueta", value_vars=["pct_articulos", "pct_gasto"],
+                                      var_name="medida", value_name="porcentaje")
+        concentracion["medida"] = concentracion["medida"].map({"pct_articulos": "% de artículos",
+                                                               "pct_gasto": "% del gasto"})
+        fig = px.bar(concentracion, x="porcentaje", y="etiqueta", color="medida", orientation="h", barmode="group",
+                     color_discrete_map={"% de artículos": "#9fb8d0", "% del gasto": COLOR},
+                     labels={"porcentaje": "%", "etiqueta": ""})
+        fig.update_yaxes(autorange="reversed")
+        mostrar(fig)
+    with Contenedor_B:
+        seccion("Mapa de grupos: precio vs volumen")
+        mapa = PERFILES.assign(clave="G" + PERFILES["grupo"].astype(str))
+        fig = px.scatter(mapa, x="precio_unitario", y="unidades_compra", size="pct_gasto", text="clave",
+                         log_x=True, log_y=True, size_max=60, hover_name="etiqueta",
+                         color_discrete_sequence=[COLOR],
+                         labels={"precio_unitario": "Precio unitario mediano (escala log)",
+                                 "unidades_compra": "Unidades por compra (escala log)"})
+        #G4 queda junto a G6: su etiqueta va abajo para que no se encimen
+        fig.update_traces(textposition=["bottom center" if c == "G4" else "top center" for c in mapa["clave"]],
+                          marker=dict(opacity=0.75))
+        mostrar(fig)
+        st.caption("Cada burbuja es un grupo; su tamaño es el % del gasto que concentra.")
+
+    seccion("Perfil y estrategia por grupo")
+    tabla_perfil = PERFILES[["grupo", "nombre", "articulos", "pct_gasto", "precio_unitario", "unidades_compra",
+                             "compras", "recencia_dias"]].rename(columns={
+        "grupo": "Grupo", "nombre": "Perfil", "articulos": "Artículos", "pct_gasto": "% del gasto",
+        "precio_unitario": "Precio mediano", "unidades_compra": "Unidades por compra", "compras": "Compras",
+        "recencia_dias": "Días desde la última compra"})
+    st.dataframe(tabla_perfil.style.format({"% del gasto": "{:.1f}%", "Precio mediano": "${:,.0f}",
+                                            "Unidades por compra": "{:.1f}", "Días desde la última compra": "{:.0f}"}),
+                 hide_index=True)
+    st.caption("Valores medianos de cada grupo.")
+    st.dataframe(PERFILES[["grupo", "nombre", "estrategia"]].rename(columns={
+        "grupo": "Grupo", "nombre": "Perfil", "estrategia": "Estrategia sugerida (propuesta del equipo)"}),
+        hide_index=True)
+
+    #Cruce con el inventario: solo si existe el archivo con el grupo de cada artículo
+    if os.path.exists(ARCHIVO_CLUSTERS):
+        seccion("¿En qué estado de inventario está cada grupo?")
+        clusters = pd.read_csv(ARCHIVO_CLUSTERS)
+        clusters.columns = clusters.columns.str.strip()
+        clusters = clusters[["articulo_id", COL_GRUPO]].rename(columns={COL_GRUPO: "grupo"})
+        cruce_g = cruce.merge(clusters, on="articulo_id", how="inner").merge(
+            PERFILES[["grupo", "etiqueta"]], on="grupo", how="left")
+        st.caption(f"{cruce_g['articulo_id'].nunique()} de 473 artículos segmentados tienen existencia al corte.")
+        if len(cruce_g):
+            Col_1, Col_2 = st.columns(2)
+            with Col_1:
+                conteo_g = cruce_g.groupby(["etiqueta", "estado_inventario"]).size().reset_index(name="articulos")
+                fig = px.bar(conteo_g, x="articulos", y="etiqueta", color="estado_inventario", orientation="h",
+                             color_discrete_map=COLORES_ESTADO, labels={"etiqueta": "", "articulos": "Artículos"})
+                fig.update_yaxes(categoryorder="array", categoryarray=list(PERFILES["etiqueta"])[::-1])
+                mostrar(fig)
+            with Col_2:
+                valor_g = cruce_g.pivot_table(index="etiqueta", columns="estado_inventario",
+                                              values="valor_inventario", aggfunc="sum", fill_value=0)
+                valor_g = valor_g.reindex([e for e in PERFILES["etiqueta"] if e in valor_g.index])
+                st.dataframe(valor_g.style.format("${:,.0f}"))
+                st.caption("Valor del inventario al corte por grupo y estado.")
+
+    with st.expander("¿Por qué k-means y no el agrupamiento jerárquico?"):
+        st.dataframe(METODOS.style.format({"Silhouette": "{:.3f}", "Grupo mayor (% de artículos)": "{:.1f}%"}),
+                     hide_index=True)
+        st.markdown("El silhouette mide qué tan separados están los grupos (más alto es mejor). El jerárquico con "
+                    "*single* tiene el valor más alto, pero junta el 96% de los artículos en un grupo, así que no "
+                    "distingue perfiles. K-means da buena separación con grupos útiles. Además, los grupos de alto "
+                    "valor coinciden en ambos métodos (26 de 28, 17 de 19 y 28 de 32 artículos), lo que respalda el resultado.")
+
+    lectura(f"Las compras de CLV están muy concentradas: <b>{alto['articulos'].sum()} artículos "
+            f"({alto['pct_articulos'].sum():.0f}%) se llevan el {alto['pct_gasto'].sum():.0f}% del gasto</b>, y solo los "
+            f"{g6['articulos']} equipos de alto valor concentran la mitad. En cambio, {bajo['articulos'].sum()} artículos "
+            f"({bajo['pct_articulos'].sum():.0f}%) suman apenas el {bajo['pct_gasto'].sum():.0f}%. Por eso cada grupo pide "
+            "una estrategia distinta: control estricto en los de alto valor, abasto asegurado en los consumibles estrella "
+            "y revisión de los que dejaron de comprarse (grupo 3), que pueden terminar como inventario detenido.")
 
 ##############################################################################
 # CONTENIDO DE LA VISTA 6
@@ -658,20 +882,21 @@ if View == "ANOVA":
         with Contenedor_A:
             seccion("Media por grupo con error estándar")
             resumen = datos.groupby(Variable_x)["y"].agg(['mean', 'sem']).reset_index()
-            resumen = resumen.sort_values('mean', ascending=False)
-            fig, ax = plt.subplots()
-            ax.bar(resumen[Variable_x], resumen['mean'], yerr=resumen['sem'], capsize=5,
-                   color=COLOR, edgecolor='none')
-            ax.set_ylabel(f"Media de {etiqueta_y}")
-            ax.set_xlabel(Variable_x)
-            ax.tick_params(axis='x', labelrotation=45)
-            ax.spines[['top', 'right']].set_visible(False)
-            fig.tight_layout()
-            st.pyplot(fig)
+            #Mes y año se ordenan en el tiempo; las demás variables de mayor a menor
+            if Variable_x in ["mes", "anio"]:
+                resumen = resumen.sort_values(Variable_x, key=lambda s: s.astype(int))
+            else:
+                resumen = resumen.sort_values('mean', ascending=False)
+            fig = px.bar(resumen, x=Variable_x, y="mean", error_y="sem", color_discrete_sequence=[COLOR],
+                         labels={"mean": f"Media de {etiqueta_y}"})
+            fig.update_xaxes(type="category")
+            mostrar(fig)
         # Contenedor B: distribución por grupo
         with Contenedor_B:
             seccion("Distribución por grupo")
-            fig = px.box(datos, x=Variable_x, y="y", labels={"y": etiqueta_y}, color_discrete_sequence=[COLOR])
+            orden_x = list(resumen[Variable_x])
+            fig = px.box(datos, x=Variable_x, y="y", labels={"y": etiqueta_y}, color_discrete_sequence=[COLOR],
+                         category_orders={Variable_x: orden_x})
             fig.update_xaxes(type="category")
             mostrar(fig)
 
@@ -727,59 +952,93 @@ if View == "ANOVA":
                               labels={"y": f"Media de {etiqueta_y}"})
                 mostrar(fig)
 
-    seccion("Comentarios del equipo")
-    st.text_area("Interpretación", key="com_anova", label_visibility="collapsed")
+        #Lectura del resultado: cambia según la base y la variable elegidas
+        if p_valor < 0.05:
+            grupo_alto = resumen.sort_values("mean", ascending=False).iloc[0][Variable_x]
+            texto = (f"<b>{Variable_x.capitalize()} sí genera diferencias reales</b> en {Variable_y} "
+                     f"(p {formato_p_html(p_valor)}) y explica el {eta2 * 100:.0f}% de la variación (efecto {tamano}). "
+                     f"El grupo más alto es <b>{grupo_alto}</b>; la tabla de Tukey muestra qué pares son distintos.")
+        else:
+            texto = (f"<b>{Variable_x.capitalize()} no genera diferencias significativas</b> en {Variable_y} "
+                     f"(p = {p_valor:.2f}); las diferencias que se ven en la gráfica están dentro de la variación normal.")
+            if Base == "Salidas totales por mes" and Variable_x == "mes":
+                texto += (" Para CLV significa que <b>su demanda no es estacional</b>: no necesita compras por temporada, "
+                          "sino gestionar cada artículo (ver Rotación y cobertura).")
+            elif Variable_x == "anio":
+                texto += (" Aunque visualmente hay una tendencia de crecimiento, el ANOVA trata los años como grupos "
+                          "sin orden y la variación entre meses es alta; el crecimiento se reporta de forma descriptiva.")
+        if Base in ["Salidas totales por mes", "Salidas por artículo-mes"] and excluir_2021:
+            texto += " Se excluyó 2021 por estar incompleto" + (f" y por el mes atípico de {pico_txt}." if hay_pico else ".")
+        lectura(texto)
 
 ##############################################################################
 # CONTENIDO DE LA VISTA 7
 if View == "Conclusiones":
-    encabezado("Conclusiones y recomendaciones", "Hallazgos calculados con los datos y propuestas del equipo")
+    encabezado("Conclusiones y recomendaciones", "Lo que dicen juntos todos los análisis del tablero")
 
-    #Hallazgos calculados automáticamente con los datos
-    anual = df_salidas.groupby("anio")["salidas"].sum()
-    mensual = df_salidas[df_salidas["anio"] >= 2021].groupby(["anio", "mes"])["salidas"].sum().reset_index()
-    mes_pico = int(mensual.groupby("mes")["salidas"].mean().idxmax())
-    sin_mov = cruce[cruce["estado_inventario"] == "Sin movimiento 12m"]
-    baja = cruce[cruce["estado_inventario"] == "Cobertura baja"]
+    pct_sobre = sobre["valor_inventario"].sum() / valor_total * 100
+    pct_sin_mov = sin_mov["valor_inventario"].sum() / valor_total * 100
 
     #Tarjetas con los números clave
-    tarjetas_conc = []
-    if 2022 in anual.index and 2025 in anual.index:
-        cambio = (anual[2025] / anual[2022] - 1) * 100
-        tarjetas_conc.append(("Salidas 2022 → 2025", f"{cambio:+.0f}%", "años completos", "ok" if cambio >= 0 else "alerta"))
-    tarjetas_conc.append(("Mes de mayor salida", MESES[mes_pico - 1].capitalize(), "promedio 2021–2026"))
-    tarjetas_conc.append(("Inventario sin movimiento",
-                          f"{sin_mov['valor_inventario'].sum() / cruce['valor_inventario'].sum() * 100:.1f}%",
-                          f"del valor ({len(sin_mov):,} artículos)", "neutro"))
-    tarjetas_conc.append(("Vendidos sin existencia", f"{len(sin_exist):,}", "posibles quiebres", "alerta"))
-    fila_tarjetas(tarjetas_conc)
+    fila_tarjetas([
+        ("Salidas 2022 → 2025", f"{crecimiento:+.0f}%", f"{anio_actual}: {var_ytd:+.1f}% vs {anio_actual - 1}",
+         "ok" if crecimiento >= 0 else "alerta"),
+        ("Estacionalidad", "Significativa" if estacional_sig else "No significativa",
+         f"ANOVA por mes, p {formato_p_html(p_estacional)}" if estacional_sig else f"ANOVA por mes, p = {p_estacional:.2f}"),
+        ("Dinero detenido", f"{pct_sobre + pct_sin_mov:.0f}%",
+         f"del inventario ({dinero(sobre['valor_inventario'].sum() + sin_mov['valor_inventario'].sum())})", "aviso"),
+        ("Clase A en riesgo", f"{baja_a}", f"con cobertura menor a {cobertura_baja:g} mes(es)", "alerta"),
+    ])
 
-    seccion("Hallazgos con los datos")
-    hallazgos = []
-    if 2022 in anual.index and 2025 in anual.index:
-        verbo = "crecieron" if cambio >= 0 else "bajaron"
-        hallazgos.append(f"Las salidas {verbo} {abs(cambio):.0f}% entre 2022 y 2025 (años completos).")
-    if not np.isnan(var_ytd):
-        hallazgos.append(f"En enero-{mes_txt} {anio_actual} las salidas van {var_ytd:+.1f}% contra el mismo periodo de {anio_actual - 1}.")
-    hallazgos.append(f"El mes con más salidas en promedio es {MESES[mes_pico - 1]}.")
-    hallazgos.append(f"{len(sin_mov):,} artículos en existencia no tuvieron salidas en 12 meses "
-                     f"({dinero(sin_mov['valor_inventario'].sum())}, {sin_mov['valor_inventario'].sum() / cruce['valor_inventario'].sum() * 100:.1f}% del valor).")
-    hallazgos.append(f"{len(baja):,} artículos tienen cobertura menor a {cobertura_baja} mes(es); "
-                     f"{(baja['clase_abc'] == 'A').sum()} son clase A.")
-    hallazgos.append(f"{len(sin_exist):,} artículos se vendieron en 2026 y no tienen existencia al corte "
-                     f"({dinero(sin_exist['monto_vendido'].sum())} vendidos).")
-    for h in hallazgos:
-        st.markdown(f"- {h}")
+    #Conclusiones integradas: cada una junta varias secciones del tablero
+    seccion("Conclusiones integradas")
+    conclusiones = [
+        (f"1. La demanda {'creció' if crecimiento >= 0 else 'cayó'}{' y hoy está estable' if estable else ''}"
+         f"{', sin temporadas' if not estacional_sig else ', con meses de mayor demanda'}.",
+         f"Las salidas {'crecieron' if crecimiento >= 0 else 'cayeron'} {abs(crecimiento):.0f}% entre 2022 y 2025 "
+         f"y en {anio_actual} van {var_ytd:+.1f}% contra el año anterior. "
+         + (f"El ANOVA confirma que ningún mes vende más que otro (p = {p_estacional:.2f}). " if not estacional_sig
+            else f"El ANOVA muestra diferencias entre meses (p {formato_p_html(p_estacional)}). ")
+         + "<i>Salidas de almacén · ANOVA</i>"),
+        ("2. El problema no es cuánto inventario hay, sino de qué.",
+         f"El {pct_sobre:.0f}% del valor está en sobreinventario y el {pct_sin_mov:.0f}% en artículos sin movimiento, "
+         f"mientras {len(baja):,} artículos están por agotarse. <i>Existencias · Rotación y cobertura</i>"),
+        ("3. Pocos artículos sostienen la venta, y algunos están en riesgo.",
+         f"{n_80_total:,} artículos generan el 80% del monto vendido; {baja_a} de ellos tienen cobertura baja. "
+         "Un faltante ahí pesa mucho más que en el resto. <i>Histórico de ventas · Rotación y cobertura</i>"),
+        ("4. Hay ventas que no pasan por el inventario.",
+         f"{len(sin_exist):,} artículos vendidos en 2026 ({pct_sin_exist:.0f}% del monto) no aparecen en las existencias "
+         "al corte. Pueden ser equipos bajo pedido o faltantes: hay que distinguirlos. <i>Ventas · Existencias</i>"),
+        ("5. Las compras repiten el mismo patrón de concentración.",
+         f"En el clustering de compras, {PERFILES[PERFILES['grupo'].isin([6, 4, 3])]['articulos'].sum()} artículos "
+         f"(17%) concentran el {PERFILES[PERFILES['grupo'].isin([6, 4, 3])]['pct_gasto'].sum():.0f}% del gasto, y 32 equipos "
+         "de alto valor se llevan la mitad. Gestionar bien esos pocos artículos protege la mayor parte del dinero. "
+         "<i>Segmentación de productos · Histórico de ventas</i>"),
+        ("6. La calidad de los datos limita algunos análisis.",
+         (f"El mes atípico de {pico_txt} ({pico_valor:,.0f} salidas) y l" if hay_pico else "L")
+         + "a falta de un identificador común entre hojas obligaron a "
+         + ("excluir datos y " if hay_pico else "") + "cruzar por nombre de producto. <i>Salidas · Rotación</i>"),
+    ]
+    for titulo, cuerpo in conclusiones:
+        st.markdown(f"<div class='conclusion'><b>{titulo}</b>{cuerpo}</div>", unsafe_allow_html=True)
 
-    seccion("Recomendaciones del equipo")
-    st.text_area("Recomendaciones", key="com_recom", height=150, label_visibility="collapsed",
-                 placeholder="1. ...\n2. ...\n3. ...")
+    seccion("Recomendaciones para CLV")
+    st.markdown(f"""
+1. **Reponer primero los {baja_a} artículos clase A con cobertura baja** (lista descargable en Rotación y cobertura).
+2. **{"Planear compras por artículo y no por temporada" if not estacional_sig else "Planear compras por artículo y anticipar los meses de mayor demanda"}**, usando la cobertura en meses como referencia.
+3. **Aplicar una estrategia por segmento**: control estricto y compra bajo pedido en equipos de alto valor, reorden automático en consumibles estrella y revisión de los artículos que dejaron de comprarse.
+4. **Liberar dinero detenido**: revisar los artículos en sobreinventario y sin movimiento para promociones, liquidación o ajuste de compras.
+5. **Clasificar los artículos vendidos sin existencia** en bajo pedido o faltantes reales.
+6. **Agregar `articulo_id` a la hoja de salidas** para cruzar las bases sin depender del nombre.
+7. **Validar con CLV** {"el mes atípico de " + pico_txt + " y " if hay_pico else ""}los umbrales de alerta del tablero.
+""")
 
     seccion("Limitaciones")
-    st.markdown("""
+    st.markdown(f"""
 - El cruce entre hojas se hizo por **nombre de producto**: las salidas no traen `articulo_id`.
-- No hay registros de **2020**, y 2019 solo tiene un mes; 2021 y 2026 están incompletos.
+- No hay registros de **2020**; 2019 solo tiene un mes; 2021 y 2026 están incompletos.
+{"- **" + pico_txt.capitalize() + "** tiene un volumen atípico y se excluye del análisis estadístico." if hay_pico else ""}
 - La hoja de entradas y salidas **solo trae salidas**; no se pueden calcular las entradas.
-- Las existencias son una foto al **15/10/2026**; la cobertura supone que la demanda se mantiene.
+- Las existencias son una foto al **{FECHA_CORTE}**; la cobertura supone que la demanda se mantiene.
 - Los umbrales de alerta son didácticos y deben validarse con la empresa.
 """)
